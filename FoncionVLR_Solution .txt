@@ -1,0 +1,174 @@
+Sub ProcessVLRData()
+    Dim dictVLR As Object, dictCountry As Object, dictOperator As Object
+    Dim inputPath As String, outputPath As String, refPath As String
+    Dim line As String, parts() As String
+    Dim vlr As Variant, countryCode As Variant, operatorCode As String
+    Dim i As Long, maxLength As Integer, countryFound As Boolean
+    Dim pays As String, operateur As String, currentCode As String
+    Dim op As Variant, operateurs As Variant
+    Dim wbRef As Workbook, wbOut As Workbook
+    Dim wsRef As Worksheet, wsOut As Worksheet, wsTemp As Worksheet
+    Dim lastRow As Long, rowIndex As Long
+    Dim fileNumber As Integer
+
+    ' Demander les chemins des fichiers
+    inputPath = Application.GetOpenFilename("Fichiers texte (*.txt), *.txt", 1, "Sélectionnez le fichier VLR ")
+    If inputPath = "False" Then Exit Sub ' Annuler si l'utilisateur annule la sélection
+
+    refPath = Application.GetOpenFilename("Fichiers Excel (*.xlsx; *.xls), *.xlsx; *.xls", 1, "Sélectionnez le fichier de référence des pays (Excel)")
+    If refPath = "False" Then Exit Sub ' Annuler si l'utilisateur annule la sélection
+
+    outputPath = Application.GetSaveAsFilename("Résultat.xlsx", "Fichiers Excel (*.xlsx), *.xlsx", 1, "Enregistrer le fichier de sortie")
+    If outputPath = "False" Then Exit Sub ' Annuler si l'utilisateur annule la sélection
+
+    ' Initialiser les dictionnaires
+    Set dictVLR = CreateObject("Scripting.Dictionary")
+    Set dictCountry = CreateObject("Scripting.Dictionary")
+    Set dictOperator = CreateObject("Scripting.Dictionary")
+
+    ' Charger le fichier de référence (Excel)
+    On Error Resume Next
+    Set wbRef = Workbooks.Open(refPath, ReadOnly:=True)
+    If wbRef Is Nothing Then
+        MsgBox "Erreur : Impossible d'ouvrir le fichier de référence. Vérifiez le chemin et que le fichier n'est pas déjà ouvert.", vbCritical
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    Set wsRef = wbRef.Sheets(1) ' Supposons que les données sont dans la première feuille
+    lastRow = wsRef.Cells(wsRef.Rows.Count, 1).End(xlUp).Row
+
+    ' Lire les données de référence
+    For i = 2 To lastRow ' Supposons que la première ligne est l'en-tête
+        On Error Resume Next
+        dictCountry(CStr(wsRef.Cells(i, 2).Value)) = CStr(wsRef.Cells(i, 1).Value) ' Colonne 1 : Pays, Colonne 2 : Indicatif
+        dictOperator(CStr(wsRef.Cells(i, 2).Value)) = CStr(wsRef.Cells(i, 3).Value) ' Colonne 3 : Opérateurs
+        On Error GoTo 0
+    Next i
+    wbRef.Close False ' Fermer le fichier de référence sans enregistrer
+
+    ' Afficher un message de débogage pour vérifier les données de référence
+    MsgBox "Données de référence chargées : " & dictCountry.Count & " pays trouvés.", vbInformation
+
+    ' Créer un nouveau fichier Excel pour le résultat
+    Set wbOut = Workbooks.Add
+    Set wsOut = wbOut.Sheets(1)
+    wsOut.Name = "Résultat"
+    wsOut.Cells(1, 1).Value = "VLR_NUMBER"
+    wsOut.Cells(1, 2).Value = "nombre_repetitions"
+    wsOut.Cells(1, 3).Value = "Pays"
+    wsOut.Cells(1, 4).Value = "Opérateurs disponibles"
+    rowIndex = 2
+
+    ' Importer le fichier texte dans une feuille temporaire
+    Set wsTemp = wbOut.Sheets.Add
+    wsTemp.Name = "TempData"
+    
+    ' Importation du fichier texte
+    With wsTemp.QueryTables.Add(Connection:="TEXT;" & inputPath, Destination:=wsTemp.Range("A1"))
+        .TextFileTabDelimiter = False
+        .TextFileSemicolonDelimiter = False
+        .TextFileCommaDelimiter = True
+        .TextFileColumnDataTypes = Array(1, 1, 1) ' Toutes les colonnes sont traitées comme du texte
+        .Refresh BackgroundQuery:=False
+    End With
+
+    ' Lire les données du fichier texte
+    lastRow = wsTemp.Cells(wsTemp.Rows.Count, 1).End(xlUp).Row
+    For i = 2 To lastRow ' Commencer à partir de la ligne 2 (en-têtes en ligne 1)
+        vlr = Trim(wsTemp.Cells(i, 3).Value) ' "VLR_NUMBER" est dans la 3ème colonne
+        
+        ' Gestion des doublons
+        If Not dictVLR.Exists(vlr) Then
+            dictVLR.Add vlr, 1
+        Else
+            dictVLR(vlr) = dictVLR(vlr) + 1
+        End If
+    Next i
+
+    ' Supprimer la feuille temporaire
+    Application.DisplayAlerts = False
+    wsTemp.Delete
+    Application.DisplayAlerts = True
+
+    ' Afficher un message de débogage pour vérifier les données du fichier texte
+    MsgBox "Données du fichier texte chargées : " & dictVLR.Count & " VLR_NUMBER trouvés.", vbInformation
+
+    ' Parcourir les clés du dictionnaire dictVLR
+    For Each vlr In dictVLR.Keys
+        countryFound = False
+        maxLength = 0
+        currentCode = ""
+        
+        ' Trouver le pays (recherche du code le plus long correspondant)
+        For Each countryCode In dictCountry.Keys
+            If Len(countryCode) > maxLength Then
+                If Left(vlr, Len(countryCode)) = countryCode Then
+                    maxLength = Len(countryCode)
+                    currentCode = countryCode
+                    countryFound = True
+                End If
+            End If
+        Next
+        
+        ' Trouver les opérateurs disponibles
+        If countryFound Then
+            pays = dictCountry(currentCode)
+            operatorCode = Mid(vlr, maxLength + 1) ' Extraire le code opérateur après le préfixe du pays
+            operateurs = Split(dictOperator(currentCode), ",") ' Séparer les opérateurs par virgule
+            
+            operateur = Join(operateurs, ", ") ' Joindre les opérateurs avec une virgule si plusieurs sont disponibles
+        Else
+            pays = "Inconnu"
+            operateur = "Inconnu"
+        End If
+        
+        ' Écrire les résultats dans le fichier Excel
+        vlr = Trim(vlr)
+    If IsNumeric(vlr) Then
+        ' Appliquer le format sans décimales
+        wsOut.Cells(rowIndex, 1).Value = Format(CDbl(vlr), "0")
+        wsOut.Cells(rowIndex, 1).NumberFormat = "0" ' Forcer le format de la cellule
+    Else
+        ' Gérer les cas où la valeur n'est pas numérique
+        wsOut.Cells(rowIndex, 1).Value = "N/A"
+    End If
+        wsOut.Cells(rowIndex, 2).Value = Format(dictVLR(vlr), "0") ' Format avec 0 décimale pour les répétitions
+        wsOut.Cells(rowIndex, 3).Value = pays
+        wsOut.Cells(rowIndex, 4).Value = operateur ' Afficher la liste des opérateurs dans la 4ème colonne
+        rowIndex = rowIndex + 1
+    Next
+
+    ' Trier les résultats par nombre de répétitions (colonne 2)
+    wsOut.Sort.SortFields.Clear
+    wsOut.Sort.SortFields.Add Key:=wsOut.Range("B2:B" & rowIndex - 1), SortOn:=xlSortOnValues, Order:=xlDescending, DataOption:=xlSortTextAsNumbers
+    wsOut.Sort.SetRange wsOut.Range("A1:D" & rowIndex - 1)
+    wsOut.Sort.Header = xlYes
+    wsOut.Sort.Apply
+
+    ' Afficher les résultats à l'écran
+    wbOut.Windows(1).Visible = True ' Rendre le fichier de sortie visible
+    Application.ScreenUpdating = True ' Activer la mise à jour de l'écran
+
+    ' Demander à l'utilisateur s'il souhaite enregistrer le fichier
+    If MsgBox("Voulez-vous enregistrer le fichier de résultat ?", vbYesNo + vbQuestion) = vbYes Then
+        Application.DisplayAlerts = False
+        wbOut.SaveAs outputPath
+        Application.DisplayAlerts = True
+        MsgBox "Fichier enregistré avec succès ici : " & outputPath, vbInformation
+    Else
+        MsgBox "Fichier non enregistré.", vbInformation
+    End If
+
+    Exit Sub
+
+FileError:
+    MsgBox "Erreur lors de l'ouverture ou de la lecture du fichier texte. Vérifiez le chemin et que le fichier n'est pas déjà ouvert.", vbCritical
+    Close #fileNumber
+    Exit Sub
+
+OutputError:
+    MsgBox "Erreur lors de la création ou de l'écriture du fichier de sortie. Vérifiez que le fichier n'est pas déjà ouvert.", vbCritical
+    If Not wbOut Is Nothing Then wbOut.Close False
+    Exit Sub
+End Sub
